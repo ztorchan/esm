@@ -17,6 +17,7 @@ import torch
 
 import esm
 from esm.data import read_fasta
+from esm.esmfold.v1.data_parallel_esmfold import DataParallelESMFold
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -153,6 +154,7 @@ def run(args):
         model = init_model_on_gpu_with_cpu_offloading(model)
     else:
         model.cuda()
+        model = DataParallelESMFold(model)
     logger.info("Starting Predictions")
     batched_sequences = create_batched_sequence_datasest(all_sequences, args.max_tokens_per_batch)
 
