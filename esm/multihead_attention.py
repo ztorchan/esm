@@ -13,7 +13,9 @@ from torch.nn import Parameter
 from esm.rotary_embedding import RotaryEmbedding
 
 import uuid
-
+from colossalai.legacy.core import global_context as gpc
+from colossalai.legacy.nn.layer.parallel_sequence._operation import RingAV, RingQK
+from colossalai.legacy.context.parallel_mode import ParallelMode
 
 def utils_softmax(x, dim: int, onnx_trace: bool = False):
     if onnx_trace:
@@ -354,10 +356,18 @@ class MultiheadAttention(nn.Module):
         if self.rot_emb:
             q, k = self.rot_emb(q, k)
 
-        attn_weights = torch.bmm(q, k.transpose(1, 2))
+        # attn_weights = torch.bmm(q, k.transpose(1, 2))   #在这里计算QK^T
+        attn_weights = RingQK.apply(
+            q.contiguous(), 
+            k.contiguous(), 
+            bsz, 
+            self.num_heads, 
+            tgt_len
+        )
+
         attn_weights = MultiheadAttention.apply_sparse_mask(attn_weights, tgt_len, src_len, bsz)
 
-        assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
+        assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len * gpc.get_world_size(ParallelMode.SEQUENCE)]
 
         if attn_mask is not None:
             attn_mask = attn_mask.unsqueeze(0)
@@ -384,7 +394,17 @@ class MultiheadAttention(nn.Module):
             training=self.training,
         )
         assert v is not None
-        attn = torch.bmm(attn_probs, v)
+
+        # attn = torch.bmm(attn_probs, v) #在这里计算AV
+        attn = RingAV.apply(
+            attn_probs.contiguous(),
+            v.contiguous(),
+            bsz,
+            self.num_heads,
+            self.embed_dim // self.num_heads,
+            tgt_len
+        )
+
         assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
         if self.onnx_trace and attn.size(1) == 1:
             # when ONNX tracing a single decoder step (sequence length == 1)
@@ -396,7 +416,7 @@ class MultiheadAttention(nn.Module):
         attn_weights: Optional[Tensor] = None
         if need_weights:
             attn_weights = attn_weights_float.view(
-                bsz, self.num_heads, tgt_len, src_len
+                bsz, self.num_heads, tgt_len, src_len * gpc.get_world_size(ParallelMode.SEQUENCE)
             ).type_as(attn).transpose(1, 0)
             if not need_head_weights:
                 # average attention weights over heads
