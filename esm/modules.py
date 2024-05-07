@@ -141,6 +141,69 @@ class TransformerLayer(nn.Module):
 
         return x, attn
 
+class PipeTransformerLayer(TransformerLayer):
+    def __init__(
+        self,
+        layer_id,
+        embed_dim,
+        ffn_embed_dim,
+        attention_heads,
+        add_bias_kv=True,
+        use_esm1b_layer_norm=False,
+        use_rotary_embeddings: bool = False,
+    ):
+        self.layer_id = layer_id
+        super().__init__(
+            embed_dim,
+            ffn_embed_dim,
+            attention_heads,
+            add_bias_kv=add_bias_kv,
+            use_esm1b_layer_norm=use_esm1b_layer_norm,
+            use_rotary_embeddings=use_rotary_embeddings,
+        )
+    
+    def forward(self, inputs):
+        # 为了能够在Pipeline中传递，所有输入均改为torch.Tensor类型
+        # 
+        # x, self_attn_mask: 原TransformerLayer的输入
+        # repr_layers_tensor: 以一维向量类型表示的ESM2中forward的repr_layers（原本为set类型），表示哪些层需要保存hidden_representations
+        # need_head_weights_tag: 以标量类型存储的ESM2中forward的need_head_weights（原本为bool类型），表示是否需要保存att_weights
+        # hidden_representations_tensor: 以张量类型表示的ESM2中forward的hidden_representations（原本为dict类型）
+        # attn_weights_tensor: 以张量类型表示的ESM2中forward的attn_weights（原本为list类型）
+        x, padding_mask_or_zero, repr_layers_tensor, need_head_weights_tag, hidden_representations_tensor, attn_weights_tensor = inputs
+
+        if need_head_weights_tag.dim() == 0 and need_head_weights_tag.item() == 1:
+            need_head_weights = True
+        else:
+            need_head_weights = False
+        
+        if padding_mask_or_zero.dim() == 0 and padding_mask_or_zero.item() == 0:
+            padding_mask_or_none = None
+        else:
+            padding_mask_or_none = padding_mask_or_zero
+
+        # 原TransformerLayer的forward
+        x, attn = super().forward(
+            x=x, 
+            self_attn_mask=None, 
+            self_attn_padding_mask=padding_mask_or_none, 
+            need_head_weights=need_head_weights
+        )
+
+        if torch.any(repr_layers_tensor == (self.layer_id + 1)):
+            # 等同于ESM2中的 if (layer_idx + 1) in repr_layers_tensor
+            hidden_representations_tensor[self.layer_id + 1] = x.transpose(0, 1)
+        if need_head_weights:
+            # 等同于ESM2中的 if need_head_weights
+            attn_weights_tensor[self.layer_id] = attn.transpose(1, 0)
+        
+        return (x.contiguous(), 
+                padding_mask_or_zero.contiguous(), 
+                repr_layers_tensor.contiguous(),
+                need_head_weights_tag.contiguous(), 
+                hidden_representations_tensor.contiguous(), 
+                attn_weights_tensor.contiguous()
+                )
 
 class AxialTransformerLayer(nn.Module):
     """Implements an Axial MSA Transformer block."""

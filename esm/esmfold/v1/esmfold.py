@@ -133,6 +133,9 @@ class ESMFold(nn.Module):
             repr_layers=range(self.esm.num_layers + 1),
             need_head_weights=self.cfg.use_esm_attn_map,
         )
+        if not self.esm.is_last_stage():
+            return None, None
+        
         esm_s = torch.stack(
             [v for _, v in sorted(res["representations"].items())], dim=2
         )
@@ -189,6 +192,8 @@ class ESMFold(nn.Module):
             esmaa = self._mask_inputs_to_esm(esmaa, masking_pattern)
 
         esm_s, esm_z = self._compute_language_model_representations(esmaa)
+        if not self.esm.is_last_stage():
+            return None, None
 
         # Convert esm_s to the precision used by the trunk and
         # the structure module. These tensors may be a lower precision if, for example,
@@ -326,6 +331,8 @@ class ESMFold(nn.Module):
             masking_pattern=masking_pattern,
             num_recycles=num_recycles,
         )
+        if not self.esm.is_last_stage():
+            return None
 
         output["atom37_atom_exists"] = output[
             "atom37_atom_exists"
